@@ -1,0 +1,118 @@
+---
+- hosts: workers
+  become: true
+  tasks:
+    # Detener unattended-upgrades para evitar bloqueos de apt
+    - name: Detener unattended-upgrades
+      systemd:
+        name: unattended-upgrades
+        state: stopped
+
+    # Actualizar la lista de paquetes
+    - name: Actualizar la lista de paquetes
+      apt:
+        update_cache: yes
+
+    # Instalar dependencias
+    - name: Instalar dependencias
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - software-properties-common
+        state: present
+
+    # Agregar la clave GPG de Kubernetes
+    - name: Descargar y agregar la clave GPG de Kubernetes
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/kubernetes-apt-keyring.gpg
+
+    # Agregar el repositorio de Kubernetes
+    - name: Agregar el repositorio de Kubernetes
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: kubernetes.list
+
+    # Actualizar la lista de paquetes después de agregar el repositorio
+    - name: Actualizar la lista de paquetes
+      apt:
+        update_cache: yes
+
+    # Instalar kubelet, kubeadm y kubectl
+    - name: Instalar kubelet, kubeadm y kubectl
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: yes
+
+    # Evitar actualizaciones automáticas de kubelet, kubeadm y kubectl
+    - name: Evitar actualizaciones automáticas de kubelet, kubeadm y kubectl
+      command: apt-mark hold kubelet kubeadm kubectl
+
+    # Instalar y configurar containerd
+    - name: Instalar containerd
+      apt:
+        name: containerd
+        state: present
+
+    - name: Crear archivo de configuración de containerd
+      shell: |
+        mkdir -p /etc/containerd
+        containerd config default | sudo tee /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Reiniciar y habilitar containerd
+      systemd:
+        name: containerd
+        enabled: yes
+        state: restarted
+
+    # Cargar el módulo br_netfilter
+    - name: Cargar el módulo br_netfilter
+      shell: modprobe br_netfilter
+      args:
+        creates: /proc/sys/net/bridge/bridge-nf-call-iptables
+
+    - name: Habilitar br_netfilter en el arranque
+      lineinfile:
+        path: /etc/modules-load.d/k8s.conf
+        line: "br_netfilter"
+        create: yes
+
+    # Configurar sysctl para Kubernetes
+    - name: Configurar sysctl para Kubernetes
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+
+    - name: Aplicar configuraciones de sysctl
+      command: sysctl --system
+
+    # Deshabilitar swap
+    - name: Deshabilitar swap
+      shell: |
+        swapoff -a
+        sed -i '/swap/d' /etc/fstab
+
+    # Habilitar y reiniciar kubelet
+    - name: Habilitar y reiniciar kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+        state: restarted
+
+    # Unir el nodo al clúster de Kubernetes
+    - name: Unir el nodo al clúster de Kubernetes
+      command: # Ejecutar este comando en el nodo maestro: ubeadm token create --print-join-command
+        k
